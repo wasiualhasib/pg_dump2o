@@ -1,0 +1,181 @@
+#!/bin/bash
+# Author: Sheikh Wasiu Al Hasib
+# Description: Script to perform pg_dump in SQL or Directory format and optionally create a tar or gzip-compressed file.
+
+# Function to print usage
+usage() {
+    echo "Usage: $0 -u <username> -d <database> -f <backup_base_path> [-t <table_names>] [-T <tables_file>] [-j <jobs>] [-c <compression_level>] [-S] [-R] [-Z]"
+    echo "  -u : PostgreSQL username"
+    echo "  -d : Database name to back up"
+    echo "  -f : Base path for backup directory or SQL file"
+    echo "  -t : (Optional) Comma-separated list of table names to back up"
+    echo "  -T : (Optional) File containing a list of table names to back up"
+    echo "  -j : (Optional) Number of jobs (for Directory format only)"
+    echo "  -c : (Optional) Compression level (for Directory format only)"
+    echo "  -S : Use SQL format (default is Directory format)"
+    echo "  -R : Create a tar file from the backup"
+    echo "  -Z : Create a gzip-compressed tar file from the backup"
+    exit 1
+}
+
+# Initialize variables
+CREATE_TAR=false
+CREATE_GZ=false
+USE_SQL_FORMAT=false
+
+# Parse command-line arguments using getopts
+while getopts "u:d:f:t:T:j:c:SRZ" opt; do
+    case $opt in
+        u) USERNAME="$OPTARG" ;;
+        d) DATABASE="$OPTARG" ;;
+        f) BASE_BACKUP_PATH="$OPTARG" ;;
+        t) TABLES="$OPTARG" ;;
+        T) TABLES_FILE="$OPTARG" ;;
+        j) JOBS="$OPTARG" ;;
+        c) COMPRESS_LEVEL="$OPTARG" ;;
+        S) USE_SQL_FORMAT=true ;;
+        R) CREATE_TAR=true ;;
+        Z) CREATE_GZ=true ;;
+        *) usage ;;
+    esac
+done
+
+# Validate required arguments
+if [[ -z "$USERNAME" || -z "$DATABASE" || -z "$BASE_BACKUP_PATH" ]]; then
+    usage
+fi
+
+# Check for conflicts between SQL format and Directory options
+if $USE_SQL_FORMAT && { [[ -n "$JOBS" ]] || [[ -n "$COMPRESS_LEVEL" ]]; }; then
+    echo "Error: SQL format (-S) cannot be used with Directory options (-j or -c)."
+    echo "Please remove conflicting options and try again."
+    usage
+fi
+
+# Generate timestamped backup file or directory name
+TIMESTAMP=$(date +"%d%m%y%H%M")
+if $USE_SQL_FORMAT; then
+    BACKUP_PATH="$BASE_BACKUP_PATH/${DATABASE}_$TIMESTAMP.sql"
+else
+    BACKUP_PATH="$BASE_BACKUP_PATH/${DATABASE}_$TIMESTAMP"
+fi
+TAR_FILE_PATH="$BASE_BACKUP_PATH/${DATABASE}_$TIMESTAMP.tar"
+GZ_FILE_PATH="$BASE_BACKUP_PATH/${DATABASE}_$TIMESTAMP.tar.gz"
+
+# Build the table-specific options
+TABLE_OPTIONS=""
+if [[ -n "$TABLES" ]]; then
+    # Add each comma-separated table as a -t option
+    IFS=',' read -ra TABLE_LIST <<< "$TABLES"
+    for TABLE in "${TABLE_LIST[@]}"; do
+        TABLE_OPTIONS+=" -t $TABLE"
+    done
+elif [[ -n "$TABLES_FILE" ]]; then
+    # Read tables from file and add each as a -t option
+    while read -r TABLE; do
+        TABLE_OPTIONS+=" -t $TABLE"
+    done < "$TABLES_FILE"
+fi
+
+# Log the start time
+START_TIME=$(date +%s)
+
+# Run pg_dump
+if $USE_SQL_FORMAT; then
+    echo "Starting pg_dump for database '$DATABASE' in SQL format..."
+    pg_dump -U "$USERNAME" -d "$DATABASE" -Fp -f "$BACKUP_PATH" $TABLE_OPTIONS
+else
+    echo "Starting pg_dump for database '$DATABASE' in Directory format..."
+    pg_dump -U "$USERNAME" -d "$DATABASE" -Fd --jobs="$JOBS" --compress="$COMPRESS_LEVEL" -f "$BACKUP_PATH" $TABLE_OPTIONS
+fi
+
+# Check if pg_dump was successful
+if [[ $? -eq 0 ]]; then
+    echo "pg_dump completed successfully."
+else
+    echo "pg_dump failed. Please check the database connection and parameters."
+    exit 1
+fi
+
+# Log the end time of pg_dump
+END_DUMP_TIME=$(date +%s)
+
+# Calculate total time taken for pg_dump
+TOTAL_DUMP_SECONDS=$((END_DUMP_TIME - START_TIME))
+
+# Format time for pg_dump as minutes or seconds
+if ((TOTAL_DUMP_SECONDS >= 60)); then
+    DUMP_MINUTES=$((TOTAL_DUMP_SECONDS / 60))
+    DUMP_SECONDS=$((TOTAL_DUMP_SECONDS % 60))
+    DUMP_TIME_TAKEN="${DUMP_MINUTES} minute(s) and ${DUMP_SECONDS} second(s)"
+else
+    DUMP_TIME_TAKEN="${TOTAL_DUMP_SECONDS} second(s)"
+fi
+
+# Optionally create a tar or gzip-compressed tar file
+TAR_SUMMARY=""
+if $CREATE_TAR || $CREATE_GZ; then
+    TAR_START_TIME=$(date +%s)
+    if $CREATE_GZ; then
+        echo "Creating gzip-compressed tar file $GZ_FILE_PATH..."
+        tar -czf "$GZ_FILE_PATH" -C "$(dirname "$BACKUP_PATH")" "$(basename "$BACKUP_PATH")"
+        TAR_OUTPUT_PATH="$GZ_FILE_PATH"
+    else
+        echo "Creating tar file $TAR_FILE_PATH..."
+        tar -cf "$TAR_FILE_PATH" -C "$(dirname "$BACKUP_PATH")" "$(basename "$BACKUP_PATH")"
+        TAR_OUTPUT_PATH="$TAR_FILE_PATH"
+    fi
+
+    if [[ $? -eq 0 ]]; then
+        echo "Tar file created successfully: $TAR_OUTPUT_PATH"
+    else
+        echo "Failed to create tar file."
+        exit 1
+    fi
+    TAR_END_TIME=$(date +%s)
+
+    # Calculate total time taken for tar file creation
+    TOTAL_TAR_SECONDS=$((TAR_END_TIME - TAR_START_TIME))
+    if ((TOTAL_TAR_SECONDS >= 60)); then
+        TAR_MINUTES=$((TOTAL_TAR_SECONDS / 60))
+        TAR_SECONDS=$((TOTAL_TAR_SECONDS % 60))
+        TAR_TIME_TAKEN="${TAR_MINUTES} minute(s) and ${TAR_SECONDS} second(s)"
+    else
+        TAR_TIME_TAKEN="${TOTAL_TAR_SECONDS} second(s)"
+    fi
+
+    # Calculate compression ratio
+    ORIGINAL_SIZE=$(du -sb "$BACKUP_PATH" | awk '{print $1}')
+    COMPRESSED_SIZE=$(du -sb "$TAR_OUTPUT_PATH" | awk '{print $1}')
+    COMPRESSION_RATIO=$(awk "BEGIN {printf \"%.2f\", ($COMPRESSED_SIZE/$ORIGINAL_SIZE)*100}")
+    COMPRESSION_REDUCTION=$(awk "BEGIN {printf \"%.2f\", 100 - $COMPRESSION_RATIO}")
+
+    TAR_SUMMARY=$(cat <<EOF
+Tarball Summary:
+  Tar File Path     : $TAR_OUTPUT_PATH
+  Time for Tar      : $TAR_TIME_TAKEN
+  Compression Saved : $COMPRESSION_REDUCTION%
+EOF
+)
+fi
+
+# Append timing information to the log file
+LOG_FILE="$BASE_BACKUP_PATH/backup_timing.log"
+{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup Execution Log"
+    echo "Backup Summary:"
+    echo "  Database Name     : $DATABASE"
+    echo "  Backup Format     : $([ $USE_SQL_FORMAT == true ] && echo 'SQL' || echo 'Directory')"
+    echo "  Backup Path       : $BACKUP_PATH"
+    echo "  Tables Included   : ${TABLES:-All Tables or Tables from File}"
+    echo "  Time for Dump     : $DUMP_TIME_TAKEN"
+    if $CREATE_TAR || $CREATE_GZ; then
+        echo
+        echo "$TAR_SUMMARY"
+    fi
+    echo
+    echo "-----------------------------------"
+} >> "$LOG_FILE"
+
+echo "Timing information logged in $LOG_FILE."
+
