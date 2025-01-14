@@ -108,33 +108,9 @@ pg_dump2o -u postgres -d mydb -f /backups -R
 pg_dump2o --help
 ```
 
-## Building an RPM Package
-
-1. Clone the repository:
+ Install the RPM:
     ```bash
-    git clone https://github.com/your-username/pg_dump2o.git
-    cd pg_dump2o
-    ```
-
-2. Create the RPM build environment:
-    ```bash
-    mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-    cp pg_dump2o /usr/local/bin/
-    ```
-
-3. Generate the spec file dynamically:
-    ```bash
-    ./generate_spec.sh
-    ```
-
-4. Build the RPM:
-    ```bash
-    rpmbuild -ba ~/rpmbuild/SPECS/pg_dump2o.spec
-    ```
-
-5. Install the RPM:
-    ```bash
-    sudo rpm -ivh ~/rpmbuild/RPMS/noarch/pg_dump2o-1.0-1.noarch.rpm
+    sudo rpm -ivh pg_dump2o-1.0-1.noarch.rpm
     ```
 
 ## License
